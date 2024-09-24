@@ -6,6 +6,9 @@ import torch
 import cv2
 import os
 import time
+import sys
+from importlib import import_module
+import zipfile
 
 st.set_page_config(layout="wide")
 
@@ -13,6 +16,49 @@ cfg_model_path = 'models/best.pt'
 model = None
 confidence = .25
 
+@st.cache_resource
+def download_yolov5():
+    url = "https://github.com/ultralytics/yolov5/archive/master.zip"
+    output_path = "yolov5-master.zip"
+    
+    if not os.path.exists(output_path):
+        wget.download(url, out=output_path)
+    
+    # Unzip the file
+    with zipfile.ZipFile(output_path, 'r') as zip_ref:
+        zip_ref.extractall(".")
+    
+    # Add the YOLOv5 directory to the Python path
+    yolov5_dir = os.path.abspath("yolov5-master")
+    if yolov5_dir not in sys.path:
+        sys.path.append(yolov5_dir)
+
+@st.cache_resource
+def load_model(path, device):
+    # Check if the model file exists
+    if not os.path.exists(path):
+        st.error(f"Model file not found: {path}")
+        return None
+
+    # Determine the directory containing the model file
+    model_dir = os.path.dirname(path)
+
+    # Add the model directory to the Python path
+    if model_dir not in sys.path:
+        sys.path.append(model_dir)
+
+    try:
+        # Dynamically import the YOLO module
+        yolo_module = import_module('models.yolo')
+        
+        # Load the model
+        model = yolo_module.Model(path)
+        model.to(device)
+        print("Model loaded to", device)
+        return model
+    except Exception as e:
+        st.error(f"Error loading model: {str(e)}")
+        return None
 
 def image_input(data_src):
     img_file = None
@@ -34,7 +80,6 @@ def image_input(data_src):
         with col2:
             img = infer_image(img_file)
             st.image(img, caption="Model prediction")
-
 
 def video_input(data_src):
     vid_file = None
@@ -90,7 +135,6 @@ def video_input(data_src):
 
         cap.release()
 
-
 def infer_image(img, size=None):
     model.conf = confidence
     result = model(img, size=size) if size else model(img)
@@ -98,19 +142,10 @@ def infer_image(img, size=None):
     image = Image.fromarray(result.ims[0])
     return image
 
-
-@st.cache_resource
-def load_model(path, device):
-    model_ = torch.hub.load('ultralytics/yolov5', 'custom', path=path, force_reload=True)
-    model_.to(device)
-    print("model to ", device)
-    return model_
-
 @st.cache_resource
 def download_model(url):
     model_file = wget.download(url, out="models")
     return model_file
-
 
 def get_user_model():
     model_src = st.sidebar.radio("Model source", ["file upload", "url"])
@@ -131,12 +166,14 @@ def get_user_model():
     return model_file
 
 def main():
-    # global variables
     global model, confidence, cfg_model_path
 
     st.title("Object Recognition Dashboard")
 
     st.sidebar.title("Settings")
+
+    # Download YOLOv5 repository
+    download_yolov5()
 
     # upload model
     model_src = st.sidebar.radio("Select yolov5 weight file", ["Use our demo model 5s", "Use your own model"])
@@ -151,7 +188,7 @@ def main():
 
     # check if model file is available
     if not os.path.isfile(cfg_model_path):
-        st.warning("Model file not available!!!, please added to the model folder.", icon="⚠️")
+        st.warning("Model file not available!!!, please add it to the model folder.", icon="⚠️")
     else:
         # device options
         if torch.cuda.is_available():
@@ -186,7 +223,6 @@ def main():
             image_input(data_src)
         else:
             video_input(data_src)
-
 
 if __name__ == "__main__":
     try:
