@@ -9,7 +9,7 @@ import time
 
 st.set_page_config(layout="wide")
 
-cfg_model_path = 'models/yolov5s.pt'
+cfg_model_path = 'models/best.pt'
 model = None
 confidence = .25
 
