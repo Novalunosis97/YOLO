@@ -1,90 +1,125 @@
 import streamlit as st
-from PIL import Image
-import torch
 import cv2
 import numpy as np
+from PIL import Image
+from ultralytics import YOLO
+import random
+import tempfile
 import os
-import sys
 
-# Add the YOLOv5 directory to the Python path
-yolov5_dir = os.path.abspath("yolov5")
-if yolov5_dir not in sys.path:
-    sys.path.append(yolov5_dir)
+# Initialize YOLO model with your custom weights file
+model_path = os.path.join("models", "best.pt")
+model = YOLO(model_path)
 
-# Now we can import the necessary modules from YOLOv5
-from models.experimental import attempt_load
-from utils.general import non_max_suppression
-from utils.plots import Annotator, colors
+# Streamlit App title
+st.title("Custom YOLO Object Detection")
 
-st.set_page_config(layout="wide")
+# User input for classes, separated by commas
+custom_classes = st.text_input("Enter classes (comma-separated)", "")
+if custom_classes:
+    # Split the input string into a list of classes and remove any extra whitespace
+    classes = [cls.strip() for cls in custom_classes.split(",")]
+    # Set the classes for the YOLO model
+    model.set_classes(classes)
+else:
+    classes = list(model.names.values())
 
-@st.cache_resource
-def load_model(path, device):
-    if not os.path.exists(path):
-        st.error(f"Model file not found: {path}")
-        return None
+# Function to generate distinct colors for each class
+def generate_colors(num_colors):
+    return [tuple(random.randint(0, 255) for _ in range(3)) for _ in range(num_colors)]
 
-    try:
-        model = attempt_load(path, device=device)
-        return model
-    except Exception as e:
-        st.error(f"Error loading model: {str(e)}")
-        return None
+# Generate a unique color for each class and map them
+class_colors = {cls: color for cls, color in zip(classes, generate_colors(len(classes)))}
 
-def infer_image(model, img, confidence, device):
-    img = np.array(img)
-    img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-    img = np.ascontiguousarray(img)
-    img = torch.from_numpy(img).to(device)
-    img = img.float()
-    img /= 255.0  # 0 - 255 to 0.0 - 1.0
-    if img.ndimension() == 3:
-        img = img.unsqueeze(0)
+# Function to annotate image with detections
+def annotate_image(image, results):
+    for box in results[0].boxes:  # Extract bounding boxes from the results
+        x1, y1, x2, y2 = map(int, box.xyxy[0])  # Get bounding box coordinates
+        conf = box.conf[0]  # Confidence score of the detection
+        cls_id = int(box.cls[0])  # Class ID of the detected object
+        label = f"{results[0].names[cls_id]} {conf:.2f}"  # Label with class name and confidence
+        color = class_colors[results[0].names[cls_id]]  # Color for the class
 
-    pred = model(img)[0]
-    pred = non_max_suppression(pred, confidence, 0.45)
+        # Draw the bounding box
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
 
-    # Process detections
-    for i, det in enumerate(pred):  # detections per image
-        if len(det):
-            # Rescale boxes from img_size to im0 size
-            det[:, :4] = det[:, :4].clone()  # xyxy
-            
-            annotator = Annotator(img.squeeze().permute(1, 2, 0).cpu().numpy(), line_width=3, example="best")
-            
-            for *xyxy, conf, cls in reversed(det):
-                c = int(cls)  # integer class
-                label = f'{model.names[c]} {conf:.2f}'
-                annotator.box_label(xyxy, label, color=colors(c, True))
+        # Calculate the text size and position
+        (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+        cv2.rectangle(image, (x1, y1 - h - 10), (x1 + w, y1), color, -1)  # Background rectangle for label
+        cv2.putText(image, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)  # Text label in black color
 
-    result_img = annotator.result()
-    return Image.fromarray(result_img)
+    return image
 
-def main():
-    st.title("YOLO Object Detection")
+# Image upload and processing
+uploaded_image = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+if uploaded_image:
+    image = Image.open(uploaded_image)  # Open the uploaded image
+    st.image(image, caption="Uploaded Image.", use_column_width=True)  # Display the uploaded image
 
-    # Model loading
-    model_path = 'models/best.pt'
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = load_model(model_path, device)
+    # Convert PIL image to OpenCV format
+    image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
-    if model is None:
-        st.error("Failed to load the model. Please check the model file and try again.")
-        return
+    # Run inference on the image
+    results = model(image_cv)
 
-    # Confidence slider
-    confidence = st.slider('Confidence', min_value=0.1, max_value=1.0, value=0.45)
+    # Annotate the image with detections
+    annotated_image = annotate_image(image_cv, results)
 
-    # Image upload
-    uploaded_file = st.file_uploader("Upload an image", type=['png', 'jpeg', 'jpg'])
+    # Convert annotated image back to RGB for displaying in Streamlit
+    st.image(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB), caption="Detected Objects.", use_column_width=True)
 
-    if uploaded_file is not None:
-        image = Image.open(uploaded_file)
-        st.image(image, caption="Uploaded Image", use_column_width=True)
+    # Annoted Image Download Option
+    # Convert annotated image to PIL format
+    annotated_image_pil = Image.fromarray(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB))
 
-        if st.button('Run Detection'):
-            result_image = infer_image(model, image, confidence, device)
-            st.image(result_image, caption="Detection Result", use_column_width=True)
+    # Create a download button for the annotated image
+    st.download_button(
+        label="Download Annotated Image",
+        data=cv2.imencode('.jpg', cv2.cvtColor(np.array(annotated_image_pil), cv2.COLOR_RGB2BGR))[1].tobytes(),
+        file_name="annotated_image.jpg",
+        mime="image/jpeg"
+    )
 
-if __name__ == "__main__":
-    main()
+# Video upload and processing
+uploaded_video = st.file_uploader("Choose a video...", type=["mp4", "avi", "mov"])
+if uploaded_video:
+    # Save uploaded video to a temporary file
+    tfile = tempfile.NamedTemporaryFile(delete=False)
+    tfile.write(uploaded_video.read())
+
+    # Open the video file
+    video_cap = cv2.VideoCapture(tfile.name)
+    stframe = st.empty()  # Placeholder for displaying video frames
+
+    # Initialize VideoWriter for saving the output video
+    output_video_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+    out = cv2.VideoWriter(output_video_path, cv2.VideoWriter_fourcc(*'mp4v'), 20.0, (int(video_cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))))
+
+    while video_cap.isOpened():
+        ret, frame = video_cap.read()  # Read a frame from the video
+        if not ret:
+            break
+
+        # Run inference on the frame
+        results = model(frame)
+
+        # Annotate the frame with detections
+        annotated_frame = annotate_image(frame, results)
+
+        # Write the annotated frame to the output video
+        out.write(annotated_frame)
+
+        # Convert annotated frame back to RGB for displaying in Streamlit
+        stframe.image(cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB), use_column_width=True)
+
+    video_cap.release()  # Release the video capture object
+    out.release()  # Release the VideoWriter object
+
+    # Create a download button for the annotated video
+    with open(output_video_path, "rb") as video_file:
+        st.download_button(
+            label="Download Annotated Video",
+            data=video_file,
+            file_name="annotated_video.mp4",
+            mime="video/mp4"
+        )
